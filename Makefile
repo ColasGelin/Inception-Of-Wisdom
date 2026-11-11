@@ -3,6 +3,7 @@ PART     ?= p3
 BUG      ?= syntax
 ALL      ?=
 IOW_PORT ?= 8042
+IOW_TARGET_PORT ?= 8081
 API      := http://127.0.0.1:$(IOW_PORT)
 COMPOSE  := docker compose --project-directory $(PART) -f $(PART)/docker-compose.yml
 CURL     := curl -sS --fail-with-body -w '\n'
@@ -25,9 +26,9 @@ help:
 # Docker socket as containers see it (differs between Linux and Docker Desktop).
 env:
 	@mkdir -p $(PART)/.runtime/target exports
-	@printf 'IOW_UID=%s\nIOW_GID=%s\nDOCKER_GID=%s\nIOW_PORT=%s\n' "$$(id -u)" "$$(id -g)" \
+	@printf 'IOW_UID=%s\nIOW_GID=%s\nDOCKER_GID=%s\nIOW_PORT=%s\nIOW_TARGET_PORT=%s\n' "$$(id -u)" "$$(id -g)" \
 	  "$$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock python:3.12-slim stat -c %g /var/run/docker.sock)" \
-	  "$(IOW_PORT)" > $(PART)/.env
+	  "$(IOW_PORT)" "$(IOW_TARGET_PORT)" > $(PART)/.env
 	@echo "wrote $(PART)/.env:" && sed 's/^/  /' $(PART)/.env
 
 up: env

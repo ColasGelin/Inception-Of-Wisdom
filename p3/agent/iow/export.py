@@ -29,8 +29,13 @@ def _clean(value: Any) -> Any:
     return value
 
 
-def _lines_between(log: list[dict], start: float, end: float | None) -> list[str]:
-    return [e["text"] for e in log if start - 0.001 <= e["ts"] <= (end or float("inf")) + 0.001]
+def _assign_lines(log: list[dict], starts: list[float]) -> list[list[str]]:
+    """Each log line goes to exactly one step: the last one started at or before it."""
+    out: list[list[str]] = [[] for _ in starts]
+    for e in log:
+        idx = max((i for i, t in enumerate(starts) if t <= e["ts"] + 0.001), default=0)
+        out[idx].append(e["text"])
+    return out
 
 
 def records(heal: dict[str, Any]) -> list[dict[str, Any]]:
@@ -45,11 +50,11 @@ def records(heal: dict[str, Any]) -> list[dict[str, Any]]:
         steps += a["steps"]
     steps.sort(key=lambda s: s["started_at"])
     attempts = {a["n"]: a for a in heal.get("attempts", [])}
+    lines = _assign_lines(log, [st["started_at"] for st in steps]) if steps else []
     for seq, s in enumerate(steps, 1):
         rec: dict[str, Any] = {"type": "step", "seq": seq, "ts": s["started_at"], "ended_ts": s["ended_at"],
                                "attempt": s["attempt"], "step": s["name"], "used_llm": s["llm"],
-                               "ok": s["ok"], "detail": s["detail"],
-                               "log": _lines_between(log, s["started_at"], s["ended_at"])}
+                               "ok": s["ok"], "detail": s["detail"], "log": lines[seq - 1]}
         a = attempts.get(s["attempt"]) or {}
         if s["name"] == "diagnose" and a.get("diagnosis"):
             d = a["diagnosis"]
