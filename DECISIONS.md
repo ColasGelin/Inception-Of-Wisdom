@@ -114,3 +114,20 @@ evaluator would expect.
   workspace back to the recorded original commit and verifies it.
 - **History** = JSON lines in the `agent-data` volume, one full snapshot per transition, so the third tab
   survives restarts and `make export-run` can replay a run.
+
+## Bonus
+- **Gitea is bootstrapped by a one-shot container** using the Gitea CLI (`admin user create`,
+  `generate-access-token`) next to the server, then the API for the repository. Idempotent: it exits at once
+  if the token exists. The password is random and stays in a volume (`make gitea PART=bonus` prints it).
+  Gitea runs with `OFFLINE_MODE`, no Gravatar, no mailer and the update checker disabled.
+- **The token travels in an `http.extraHeader`**, never in a remote URL, so it cannot appear in git config
+  or error messages.
+- **Pushes**: `main` is pushed normally (never forced). If it diverged because the workspace was reset, the
+  mirror repository is deleted and recreated rather than force-pushed over. `iow/auto-heal` is the agent's own
+  branch, rewritten at every heal, so it is force-pushed; an open PR from it is updated instead of duplicated.
+- **A forge failure never affects a heal**: the PR runs after the heal is verified; an error is recorded on the
+  heal (`pr_error`) and shown in the tab, the target stays healed.
+- **The diff is computed in the browser** (line LCS) from the full original and new contents recorded at apply
+  time, so what a reviewer reads is exactly what was written to disk.
+- **Not done**: the k3d/Argo CD GitOps redeploy, the symptom classifier and the "second opinion" mode. The
+  one-shot consistency re-ask in the diagnosis covers part of what a second opinion would bring.

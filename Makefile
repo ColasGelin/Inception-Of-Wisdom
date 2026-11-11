@@ -9,7 +9,7 @@ COMPOSE  := docker compose --project-directory $(PART) -f $(PART)/docker-compose
 CURL     := curl -sS --fail-with-body -w '\n'
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down logs ps reset bug heal-on heal-off test clean export-run
+.PHONY: help env up down logs ps reset bug heal-on heal-off test clean export-run gitea
 
 help:
 	@echo "make up [PART=p1|p2|p3|bonus]   build and start (default PART=p3), dashboard on $(API)"
@@ -20,6 +20,7 @@ help:
 	@echo "make reset                     recreate the target workspace from the pristine source"
 	@echo "make test                      run the unit tests inside the agent image (no Ollama needed)"
 	@echo "make export-run                write the latest healed and rolled-back runs to exports/"
+	@echo "make gitea PART=bonus          print the local Gitea URL and login (bonus)"
 	@echo "make clean [ALL=1]             remove runtime state (ALL=1 also removes model + Chroma volumes)"
 
 # UID/GID of the host user owning the workspace, and the group owning the
@@ -63,6 +64,9 @@ heal-on:
 test:
 	$(COMPOSE) build init
 	$(COMPOSE) run --rm --no-deps -u "$$(id -u):$$(id -g)" init python -m pytest -q -p no:cacheprovider tests
+
+gitea:
+	@$(COMPOSE) exec agent cat /bootstrap/credentials
 
 export-run:
 	@mkdir -p exports

@@ -95,3 +95,15 @@ Each item says how it was verified. "live" = run for real with `docker compose`.
 - [x] `make export-run` writes `exports/healed-run.jsonl` and `exports/rollback-run.jsonl`: ordered steps with
   timestamps, the agent log lines of each step (each line exactly once), `used_llm`, checks with pass/fail,
   attempt numbers, final state; no host paths (`test_export.py`).
+
+## Phase 6: bonus
+- [x] Local Gitea in compose, offline, bootstrapped with no clicks (live, from empty volumes: `[gitea] created
+  admin user iow, an API token and the repository iow/target`).
+- [x] After a heal, `iow/auto-heal` is pushed and a PR into `main` is opened with the diagnosis and patch JSON
+  in its body; never merged (live: PR #1 `iow: heal ModuleNotFoundError: No module named 'helpers'`,
+  `merged: false`, files `app/main.py +1 -1`). A later heal updates the open PR. The link is in tab 3.
+- [x] Richer dashboard: diff computed by the dashboard from full contents, per-chunk relevance scores,
+  candidate ranking, timeline of past heals (headless-browser screenshot, no JS errors).
+- [x] Tests: PR body, publisher failure recorded without failing the heal, hooks only after healed runs,
+  originals recorded for the diff (`test_bonus.py`; 130 tests in the bonus part).
+- [ ] Not done: k3d + Argo CD redeploy, symptom classifier, "second opinion" mode.

@@ -62,7 +62,7 @@ Each part can be graded on its own: `make up PART=p1` (Observer), `PART=p2` (+ A
 | `make bug BUG=none` | back to the pristine code |
 | `make heal-off` / `make heal-on` | global kill switch (also a toggle in the dashboard header) |
 | `make reset` | rebuild the target workspace from the pristine source (ChromaDB untouched) |
-| `make test` | 125 unit tests in the agent image, with a fake Docker and a fake LLM (no Ollama needed) |
+| `make test` | 126 unit tests (p3) in the agent image, with a fake Docker and a fake LLM (no Ollama needed) |
 | `make export-run` | write the latest healed run and the latest rolled-back run to `exports/*.jsonl` |
 | `make logs`, `make ps` | follow the logs, list the containers |
 | `make down` | stop and remove the containers, keep the volumes |
@@ -88,6 +88,19 @@ heals this hour, heals this process, active cooldowns), the live timing values f
 every heal with every attempt: steps, diagnosis, patch JSON, sanity checks, commit hash and message,
 post-restart health, and for a rollback the five proofs (HEAD, status, diff, blob-by-blob, agent commits
 unreachable). Refused triggers (cooldown, kill switch...) are listed below.
+
+## Bonus: `make up PART=bonus`
+
+Everything from p3, plus:
+
+- **Pull requests on a local Gitea** (container `iow-gitea`, offline, port 3042). A one-shot `gitea-init`
+  service creates the admin user, an API token and the `iow/target` repository with no clicks. After every
+  successful heal the agent pushes `main` and `iow/auto-heal` and opens (or updates) a PR into `main` titled
+  from the crash, with the diagnosis and patch JSON in the body. **The agent never merges**: a human reviews.
+  The PR link appears in the third tab. `make gitea PART=bonus` prints the URL and the generated login.
+- **Richer third tab**: each patch rendered as a diff that the dashboard computes itself from the full
+  before/after files (never a model-written diff), the per-chunk relevance (cosine) of what the model saw,
+  the candidate ranking, and a timeline of past heals with success counts and mean time to heal.
 
 ## Configuration: `p3/target/iow.config.yml`
 

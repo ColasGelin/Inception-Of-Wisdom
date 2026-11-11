@@ -101,6 +101,7 @@ async function boot() {
     document.querySelector(`nav.tabs button[data-tab="${f}"]`).classList.toggle("hidden", !on);
     if (on && tabHandlers[f]) tabHandlers[f].init();
   }
+  if (S.features.includes("bonus") && tabHandlers.bonus) tabHandlers.bonus.init();
   renderStatus(st);
   const [logs, evs] = await Promise.all([api("/logs?n=300"), api("/events/recent")]);
   logs.lines.forEach(addTargetLog);
