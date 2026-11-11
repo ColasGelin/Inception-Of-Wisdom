@@ -1,0 +1,71 @@
+# Part 2: Observer + Analyst. Run from the repo root with `make up PART=p2`.
+name: iow-p2
+
+x-ids: &ids
+  IOW_UID: ${IOW_UID:-1000}
+  IOW_GID: ${IOW_GID:-1000}
+
+services:
+  # One-shot: turns the pristine target into a git workspace on first start
+  # (kept as is on later starts). Runs as root only to chown it to IOW_UID.
+  init:
+    build: { context: ./agent, args: *ids }
+    image: iow-agent:p2
+    user: "0:0"
+    command: ["python", "-m", "iow.workspace", "init"]
+    environment: *ids
+    volumes:
+      - ./target:/pristine:ro
+      - ./.runtime:/runtime
+
+  target:
+    build: { context: ./target, args: *ids }
+    image: iow-target:p2
+    container_name: iow-target
+    restart: unless-stopped
+    environment:
+      APP_NAME: hello-iow
+      # Deployment setting with a wrong value. Healthy code ignores it; BUG=env reads it.
+      APP_MAX_NAME_LENGTH: "twenty"
+    volumes:
+      - ./.runtime/target:/app
+    ports:
+      - "127.0.0.1:${IOW_TARGET_PORT:-8081}:8000"
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+  agent:
+    image: iow-agent:p2
+    container_name: iow-agent
+    restart: unless-stopped
+    # Group that owns the Docker socket inside containers (computed by the Makefile).
+    group_add: ["${DOCKER_GID:-0}"]
+    environment:
+      IOW_PORT: "8042"
+    volumes:
+      # Root-equivalent access to the Docker daemon: see DEFENSE.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.runtime/target:/workspace/target
+      - ./target:/pristine:ro
+      - ./bugs:/bugs:ro
+      - agent-data:/data/state
+      - chroma:/data/chroma
+    ports:
+      - "127.0.0.1:${IOW_PORT:-8042}:8042"
+    depends_on:
+      init: { condition: service_completed_successfully }
+      ollama: { condition: service_started }
+
+  # Local LLM runtime. No host port: only the agent talks to it, on the compose network.
+  # Models are pulled by the agent on first start into the named volume, never into the repo.
+  ollama:
+    image: ollama/ollama:0.32.6
+    container_name: iow-ollama
+    restart: unless-stopped
+    volumes:
+      - models:/root/.ollama
+
+volumes:
+  agent-data:
+  chroma:
+  models:

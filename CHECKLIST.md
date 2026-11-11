@@ -27,3 +27,21 @@ Each item says how it was verified. "live" = run for real with `docker compose`.
   (`test_agent_survives_docker_socket_failure_and_reconnects`). Restarting Docker Desktop was not
   done on this machine because it hosts other projects' containers.
 - [x] Unit tests for signature normalisation and dedup windows (`tests/test_events.py`).
+
+## Phase 3: Analyst (p2)
+- [x] First start indexes the target (live: `9 file(s) changed, 17 chunks embedded`); `make down && make up`
+  does not re-embed (live log: `[analyst] 0 files changed, index reused (9 files, 17 chunks, nothing re-embedded)`;
+  test `test_reopen_reuses_the_index_without_embedding`).
+- [x] Editing one file re-embeds only that file within ~2 s; deleting a file removes its chunks
+  (live: `re-embedded app/text.py`, `removed app/extra.py from the index`; tests
+  `test_editing_one_file_reembeds_only_that_file`, `test_deleting_a_file_removes_its_chunks`).
+- [x] Retrieval returns top-k chunks with cosine scores in the Analyst tab (live + screenshot).
+- [x] Diagnosis names the right file for each planted bug, with a sensible paragraph, as JSON
+  `{summary, files}` (live, qwen2.5-coder:1.5b): syntax -> `app/routes.py` (missing colon line 17),
+  import -> `app/main.py` (module `helpers` not found), env -> `app/config.py` (`int('twenty')` on
+  `APP_MAX_NAME_LENGTH`). `route` raises no crash, so there is nothing to diagnose (suggestion only).
+- [x] Unusable model answers are explicit failures (mocked LLM: empty summary, no file, invented path,
+  empty object, LLM exception: `test_unusable_model_answer_is_an_explicit_failure`; live: a log with no
+  evidence returns `stage: evidence` and never calls the model).
+- [x] Tests: chunker (`test_chunker.py`), incremental index / hash manifest (`test_index.py`), path
+  mapping + answer validation + identifier extraction (`test_diagnose.py`, `test_symbols.py`).

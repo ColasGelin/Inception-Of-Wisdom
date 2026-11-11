@@ -62,6 +62,7 @@ class LlmCfg(_Strict):
     embedding_model: str = "nomic-embed-text"
     timeout_s: float = Field(120, gt=0)
     seed: int = 42
+    num_ctx: int = Field(8192, ge=2048)
 
 
 class AnalystCfg(_Strict):

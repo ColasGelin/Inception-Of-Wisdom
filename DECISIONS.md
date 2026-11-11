@@ -51,3 +51,27 @@ evaluator would expect.
   the code tolerate it (try/except with a default); if it does, the heal is accepted, because the
   symptom is gone, and that is reported honestly.
 - **route** renames `/health` to `/healthz`: the probe gets 404, a suggestion, never patched.
+
+## Analyst
+- **The manifest lives in Chroma itself**: a `code_files` collection holds one record per file
+  (content hash + symbol table as JSON) next to `code_chunks`. One store, one source of truth; the
+  manifest record is written last, so a crash mid-file just redoes that file on the next sync.
+- **Incremental = content hash**, not mtimes: a `git checkout` that rewrites ten files re-embeds
+  only the ones whose bytes changed. Changing the embedding model (stored in the collection
+  metadata) is the only case that re-embeds everything.
+- **The watcher is watchdog's PollingObserver** (1 s), for the same Docker Desktop inotify reason.
+- **Chunks**: Python by AST (module header, each top-level function/class, big classes split into
+  methods); files that do not parse (the syntax bug) fall back to splitting at top-level
+  `def`/`class`/decorators so they stay searchable. YAML by top-level key, TOML by table, Markdown by
+  heading, Dockerfile by instruction group, everything else by blank-line blocks.
+- **The model chooses, it does not search.** Candidates come from traceback frames, the symbol table
+  (who defines / imports the identifiers, who reads the env vars) and retrieval. The JSON schema
+  sent to Ollama makes `files` an enum of those candidates; the answer is validated again.
+- **Retrieval alone is not evidence.** If no traceback frame or known identifier points into the
+  tree, the diagnosis fails explicitly (`stage: evidence`) without calling the model: picking a file
+  because its embedding is close would be a guess.
+- **Models are pulled by the agent** through the Ollama API on first start (progress in `make logs`),
+  into the `models` volume. The agent refuses a chat model whose `/api/show` parameter count is
+  >= 3B, so changing `llm.model` to a bigger model cannot silently break the rule.
+- Ollama has no published host port (CPU inference, compose network only), which also avoids
+  clashing with a host Ollama on 11434.

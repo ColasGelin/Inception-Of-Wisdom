@@ -62,3 +62,43 @@ class FakeDocker:
         if self.down:
             raise ConnectionError("docker socket unavailable")
         return iter([])
+
+
+class FakeEmbedder:
+    """Deterministic bag-of-words vectors; counts what it was asked to embed."""
+
+    DIM = 64
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        import re
+        self.calls.append(texts)
+        out = []
+        for t in texts:
+            v = [0.0] * self.DIM
+            for w in re.findall(r"[a-z_]+", t.lower()):
+                v[sum(map(ord, w)) % self.DIM] += 1.0
+            v[0] += 0.01  # never a zero vector
+            out.append(v)
+        return out
+
+    @property
+    def embedded(self) -> int:
+        return sum(len(c) for c in self.calls)
+
+
+class FakeLlm:
+    """Returns canned JSON answers in order; records prompts."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.prompts: list[str] = []
+
+    def chat_json(self, system: str, user: str, schema: dict):
+        self.prompts.append(user)
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer, {"model": "fake", "elapsed_s": 0.0}

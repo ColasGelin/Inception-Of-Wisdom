@@ -14,7 +14,8 @@ WORKDIR /agent
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-RUN mkdir -p /data && chown "${IOW_UID}:${IOW_GID}" /data
+# Named volumes inherit this ownership on first mount.
+RUN mkdir -p /data/chroma /data/state && chown -R "${IOW_UID}:${IOW_GID}" /data
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 ANONYMIZED_TELEMETRY=False \
     IOW_CONFIG=/pristine/iow.config.yml IOW_WORKSPACE=/workspace/target

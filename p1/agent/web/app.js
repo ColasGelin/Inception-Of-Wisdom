@@ -132,6 +132,103 @@ function connect() {
 // Status also refreshes on a timer so config edits and "ago" labels stay current.
 setInterval(() => api("/status").then(renderStatus).catch(() => {}), 5000);
 
+// ---------------------------------------------------------------- Analyst (tab 2)
+function chunkHtml(c, extra = "") {
+  const score = c.score != null ? `<span class="score">${Number(c.score).toFixed(3)}</span><span class="bar" style="width:${Math.max(2, c.score * 80)}px"></span>` : "";
+  return `<div class="chunk"><div class="head"><span class="mono">${esc(c.path)}:${c.start}-${c.end} · ${esc(c.kind)} <b>${esc(c.name)}</b></span>
+    <span>${extra}${score}</span></div><pre class="code">${esc(c.text)}</pre></div>`;
+}
+function renderDiagnosis(d) {
+  if (!d) return "";
+  const cands = (d.candidates || []).map((c) => `<tr><td class="mono">${esc(c.path)}</td><td>${c.score.toFixed(2)}</td><td>${esc(c.reasons.join("; "))}</td></tr>`).join("");
+  const head = d.ok
+    ? `<div class="success"><b>Suspect file${d.files.length > 1 ? "s" : ""}:</b> ${d.files.map((f) => `<code>${esc(f)}</code>`).join(", ")}<p>${esc(d.summary)}</p>
+       <span class="muted">${d.llm ? `${esc(d.llm.model)} · ${d.llm.elapsed_s}s · ${d.llm.output_tokens ?? "?"} tokens` : ""}</span></div>`
+    : `<div class="fail"><b>Diagnosis failed (${esc(d.stage)}):</b> ${esc(d.reason)}<br><span class="muted">The pipeline does not guess: nothing would be patched.</span></div>`;
+  const json = d.ok ? { summary: d.summary, files: d.files } : { ok: false, reason: d.reason };
+  return `${head}
+    <h3>Diagnosis JSON (input of the Wisdom Loop)</h3><pre class="code">${esc(JSON.stringify(json, null, 2))}</pre>
+    ${cands ? `<h3>Candidates found by the index before asking the model</h3>
+      <table><thead><tr><th>file</th><th>score</th><th>why</th></tr></thead><tbody>${cands}</tbody></table>` : ""}
+    ${d.clues ? `<h3>Clues parsed from the log</h3><dl class="kv"><dt>exception</dt><dd>${esc(d.clues.exc_type)}: ${esc(d.clues.message)}</dd>
+      <dt>identifiers</dt><dd>${esc((d.clues.identifiers || []).join(", ") || "—")}</dd>
+      <dt>traceback files</dt><dd>${esc((d.clues.target_frames || []).map((f) => `${f.path}:${f.line}`).join(", ") || "—")}</dd></dl>` : ""}
+    ${(d.chunks || []).length ? `<details><summary>${d.chunks.length} chunks given to the model</summary>${d.chunks.map((c) => chunkHtml(c, `${esc(c.why)} `)).join("")}</details>` : ""}
+    ${d.answer ? `<details><summary>raw model answer</summary><pre class="code">${esc(JSON.stringify(d.answer, null, 2))}</pre></details>` : ""}`;
+}
+tabHandlers.analyst = {
+  init() {
+    $("#tab-analyst").innerHTML = `
+      <div class="grid two">
+        <div class="card"><h2>Index <span class="muted">ChromaDB PersistentClient</span></h2><dl class="kv" id="an-index"></dl></div>
+        <div class="card"><h2>Local model</h2><dl class="kv" id="an-model"></dl></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>Retrieval</h2>
+        <p class="hint">Free text in, top-k logical chunks out, each with its cosine similarity.</p>
+        <form class="row" id="an-search-form"><input type="search" id="an-q" placeholder="e.g. where is the greeting built?" required>
+          <input type="text" id="an-k" value="" size="3" placeholder="k" aria-label="top k">
+          <button class="btn" id="an-search-btn">Search</button></form>
+        <div id="an-results" class="result-box"></div>
+      </div>
+      <div class="card">
+        <h2>Diagnosis</h2>
+        <p class="hint">Pick a crash event: the index finds candidate files, the local model chooses among them and explains.</p>
+        <div class="row"><select id="an-event"></select><button class="btn" id="an-diag-btn">Diagnose</button></div>
+        <div id="an-diag" class="result-box"></div>
+      </div>`;
+    $("#an-search-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = $("#an-search-btn"); btn.disabled = true;
+      $("#an-results").innerHTML = '<p class="muted">embedding the query…</p>';
+      try {
+        const k = parseInt($("#an-k").value, 10);
+        const r = await api(`/analyst/search?q=${encodeURIComponent($("#an-q").value)}${k ? `&k=${k}` : ""}`);
+        $("#an-results").innerHTML = r.results.length ? r.results.map((c, i) => chunkHtml(c, `#${i + 1} `)).join("") : '<p class="muted">no chunks indexed yet</p>';
+      } catch (err) { $("#an-results").innerHTML = `<div class="fail">${esc(err.message)}</div>`; }
+      btn.disabled = false;
+    });
+    $("#an-diag-btn").addEventListener("click", async () => {
+      const id = $("#an-event").value;
+      if (!id) return;
+      const btn = $("#an-diag-btn"); btn.disabled = true;
+      $("#an-diag").innerHTML = '<p class="muted">asking the local model (CPU inference can take a while)…</p>';
+      try { $("#an-diag").innerHTML = renderDiagnosis(await api("/analyst/diagnose", { method: "POST", body: JSON.stringify({ event_id: id }) })); }
+      catch (err) { $("#an-diag").innerHTML = `<div class="fail">${esc(err.message)}</div>`; }
+      btn.disabled = false;
+    });
+  },
+  onStatus(st) { if (st.analyst) this.render(st.analyst); },
+  onEvent(type, data) { if (type === "index") this.render(data); },
+  onEvents(list) {
+    const sel = $("#an-event"); if (!sel) return;
+    const cur = sel.value;
+    const crashes = list.filter((e) => e.kind === "crash");
+    sel.innerHTML = crashes.length ? crashes.map((e) => `<option value="${e.id}">${esc(e.signature)} (${e.count}×, ${ago(e.last_seen)})</option>`).join("")
+      : '<option value="">no crash events yet: make bug BUG=import</option>';
+    if (crashes.some((e) => e.id === cur)) sel.value = cur;
+  },
+  render(a) {
+    const m = a.model || {};
+    const pm = $("#pill-model");
+    pm.classList.remove("hidden");
+    pm.textContent = m.model ? `model: ${m.model} · ${m.params_human} params` : `model: ${a.state}`;
+    pm.className = `pill ${m.under_3b ? "ok" : a.state === "error" ? "bad" : "warn"}`;
+    pm.dataset.tip = m.parameter_count ? `${m.parameter_count.toLocaleString()} parameters (read from Ollama /api/show)` : "";
+    const ix = a.index || {}, ls = ix.last_sync || {};
+    $("#an-index").innerHTML = `<dt>state</dt><dd class="${a.state === "ready" ? "ok" : a.state === "error" ? "bad" : "warn"}">${esc(a.state)}${a.error ? ` — ${esc(a.error)}` : ""}</dd>
+      <dt>files / chunks</dt><dd>${ix.files ?? "—"} / ${ix.chunks ?? "—"}</dd>
+      <dt>embedding model</dt><dd>${esc(ix.embedding_model || "—")}</dd>
+      <dt>last sync</dt><dd>${ls.at ? `${ago(ls.at)}: ${ls.changed.length} changed, ${ls.removed.length} removed, ${ls.chunks_embedded} chunks embedded` : "—"}</dd>
+      ${ls.changed && ls.changed.length ? `<dt>re-embedded</dt><dd>${esc(ls.changed.join(", "))}</dd>` : ""}
+      ${a.reindex_error ? `<dt>reindex</dt><dd class="bad">${esc(a.reindex_error)}</dd>` : ""}`;
+    $("#an-model").innerHTML = m.model ? `<dt>chat model</dt><dd>${esc(m.model)}</dd>
+      <dt>parameters</dt><dd class="${m.under_3b ? "ok" : "bad"}">${m.parameter_count ? m.parameter_count.toLocaleString() : "?"} (${esc(m.params_human)}) ${m.under_3b ? "&lt; 3B ✓" : "NOT under 3B"}</dd>
+      <dt>quantization</dt><dd>${esc(m.quantization || "—")}</dd><dt>runtime</dt><dd>local Ollama, temperature 0, fixed seed, JSON schema output</dd>`
+      : `<dt>state</dt><dd>${esc(a.state)}</dd>`;
+  },
+};
+
 // Analyst / Wisdom Loop tabs register into tabHandlers further down (p2, p3);
 // boot runs once the whole file has been evaluated.
 window.addEventListener("DOMContentLoaded", () => boot().catch((e) => {
