@@ -77,3 +77,21 @@ Each item says how it was verified. "live" = run for real with `docker compose`.
   - invalid YAML / out-of-range value -> last good config kept, error shown in the banner and log;
   - 20 000 error lines in 0.2 s -> one event (count 1), `/status` still answers in ~3 ms, agent CPU ~3 %,
     the triggered heal refuses to guess ("no indexed file matches anything in the error log").
+
+## Phase 5: packaging and docs
+- [x] README: requirements (Docker, ~4 GB), `make up`, first-run model download, each bug, what to watch per
+  tab, shortening the grace period, `make reset` / `make down` / `make clean`, a "how it works" diagram, the
+  model's parameter count (1,543,714,304).
+- [x] DEFENSE.md: 10-minute demo script and honest answers (docker socket, Chroma persistence, no invented
+  paths, why no diffs, byte-for-byte rollback, runaway bounds, no remote LLM, ...).
+- [x] Fresh clone + `make up` works with no manual step: `git clone` of the repo into a scratch directory,
+  `make up` built the images, created and chowned the workspace, started everything; a planted bug then went
+  through the loop and `make test` passed there. The from-zero model download (both models pulled by the
+  agent with progress lines) was exercised on the first `make up PART=p2`. That clone run also exposed a race
+  (on a restart loop, `die` was handled after Docker had already restarted the container, so the excerpt was
+  empty): fixed by reading the dead run's logs between its `start` and `die` event times, with a unit test, and
+  re-verified live (syntax and import healed on attempt 1, env rolled back with all proofs green, `docker
+  kill` reported as `exit:137` without a stale traceback).
+- [x] `make export-run` writes `exports/healed-run.jsonl` and `exports/rollback-run.jsonl`: ordered steps with
+  timestamps, the agent log lines of each step (each line exactly once), `used_llm`, checks with pass/fail,
+  attempt numbers, final state; no host paths (`test_export.py`).

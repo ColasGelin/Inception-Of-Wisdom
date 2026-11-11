@@ -162,3 +162,25 @@ def test_log_crash_without_traceback_is_signed_by_the_matching_line(config_file)
         w.check_line(line, "run1")
     assert _wait(lambda: any(e.kind == "crash" for e in store.list()))
     assert store.list()[0].signature == "log:Error: flood line <n>"
+
+
+def test_die_excerpt_is_read_between_the_runs_start_and_die(config_file):
+    cfg = config_file(FAST)
+    calls = []
+
+    class Logged(FakeContainer):
+        def logs(self, **kwargs):
+            calls.append(kwargs)
+            return b"Traceback (most recent call last):\nKeyError: 'X'\n"
+
+    fake = FakeDocker(Logged(status="restarting"))
+    store = _store()
+    w = DockerWatcher(cfg, store, client_factory=lambda t: fake)
+    w.handle_docker_event({"Action": "start", "timeNano": 1_000_000_000_500_000_000}, fake)
+    run = fake.container.started_at
+    fake.container.started_at = "2026-01-01T00:00:09.000000000Z"  # docker already restarted it
+    w.handle_docker_event({"Action": "die", "timeNano": 1_000_000_002_000_000_000,
+                           "Actor": {"Attributes": {"exitCode": "1"}}}, fake)
+    assert calls[-1]["since"] == 1_000_000_000 and calls[-1]["until"] == 1_000_000_003
+    ev = store.list()[0]
+    assert ev.signature == "KeyError: 'X'" and ev.run_id == run

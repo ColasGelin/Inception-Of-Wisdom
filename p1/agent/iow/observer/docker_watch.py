@@ -102,6 +102,8 @@ class DockerWatcher:
         self._seen_set: set[tuple[str, str]] = set()
         self._pending_log_crash: threading.Timer | None = None
         self._last_crash_count: dict[str, int] = {}
+        self._run_started: float | None = None  # time of the last `start` event seen
+        self._run_id: str | None = None          # StartedAt of that run
         self._lock = threading.Lock()
 
     # ---- helpers -------------------------------------------------------
@@ -206,7 +208,13 @@ class DockerWatcher:
         action = (ev.get("Action") or ev.get("status") or "").split(":")[0]
         attrs = (ev.get("Actor") or {}).get("Attributes") or {}
         now = time.time()
+        when = ev["timeNano"] / 1e9 if ev.get("timeNano") else now
         if action == "start":
+            self._run_started = when
+            try:  # the run id (StartedAt) of the run that just began, read while it is current
+                self._run_id = client.containers.get(self.name).attrs.get("State", {}).get("StartedAt")
+            except Exception:
+                self._run_id = None
             self._starts.append(now)
             window = self.config.get().observer.restart_loop
             while self._starts and now - self._starts[0] > window.window_s:
@@ -223,23 +231,26 @@ class DockerWatcher:
         elif action == "die":
             code = int(attrs.get("exitCode", "0") or 0)
             if code != 0:
-                self._crash_from_exit(client, code)
+                self._crash_from_exit(client, code, self._run_started, when)
         if action in ("start", "die", "stop", "kill", "restart", "destroy", "create"):
             try:
                 self.refresh_state(client)
             except Exception:
                 pass
 
-    def _crash_from_exit(self, client: Any, code: int) -> None:
+    def _crash_from_exit(self, client: Any, code: int, started: float | None, died: float) -> None:
+        """Crash event for the run that just died, from that run's own log lines.
+
+        The window is [its start event, its die event]: reading "the last lines" would blame an
+        earlier run's traceback (seen with `docker kill`), and the container's current StartedAt
+        is already the *next* run when a restart policy brought it back (seen in a crash loop).
+        """
         run_id, lines = None, []
         try:
             c = client.containers.get(self.name)
-            run_id = c.attrs.get("State", {}).get("StartedAt")
-            # Only this run's output: container logs keep earlier runs, whose traceback would
-            # otherwise be blamed for this exit (seen with `docker kill` on a healed target).
-            started = _parse_ts(run_id) if run_id else 0.0
-            since = started if started > 0 else None  # sub-second: a crash loop restarts fast
-            raw = c.logs(tail=400, stdout=True, stderr=True, since=since)
+            run_id = self._run_id or c.attrs.get("State", {}).get("StartedAt")
+            since = int(started) if started else None  # API resolution is 1 s
+            raw = c.logs(tail=400, stdout=True, stderr=True, since=since, until=int(died) + 1)
             lines = raw.decode("utf-8", "replace").splitlines()
         except Exception:
             lines = self.logs.run_lines(self.state.started_at)
