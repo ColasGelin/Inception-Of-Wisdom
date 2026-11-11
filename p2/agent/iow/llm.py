@@ -105,6 +105,8 @@ class OllamaClient:
         except httpx.HTTPError as exc:
             raise LlmError(f"LLM unreachable at {cfg.host}: {exc}") from exc
         content = (data.get("message") or {}).get("content", "")
+        if not data.get("done", True):
+            raise LlmError(f"LLM stopped before finishing its answer ({len(content)} chars, done=false)")
         stats = {"model": cfg.model, "elapsed_s": round(time.time() - t0, 2),
                  "prompt_tokens": data.get("prompt_eval_count"), "output_tokens": data.get("eval_count"),
                  "raw": content[:4000]}
@@ -116,14 +118,40 @@ class OllamaClient:
             raise LlmError("LLM answer is not a JSON object")
         return parsed, stats
 
+    def chat_text(self, system: str, user: str) -> tuple[str, dict[str, Any]]:
+        """One plain chat turn (temperature 0, fixed seed). Used for file contents: a 1.5B model
+        does not reliably escape code inside a JSON string (see DECISIONS.md)."""
+        cfg = self._cfg
+        body = {"model": cfg.model, "stream": False, "keep_alive": "30m",
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}],
+                "options": {"temperature": 0, "seed": cfg.seed, "num_ctx": cfg.num_ctx}}
+        t0 = time.time()
+        try:
+            with self._client() as c:
+                r = c.post("/api/chat", json=body)
+                r.raise_for_status()
+                data = r.json()
+        except httpx.TimeoutException as exc:
+            raise LlmError(f"LLM timed out after {cfg.timeout_s:g}s") from exc
+        except httpx.HTTPError as exc:
+            raise LlmError(f"LLM unreachable at {cfg.host}: {exc}") from exc
+        content = (data.get("message") or {}).get("content", "")
+        return content, {"model": cfg.model, "elapsed_s": round(time.time() - t0, 2),
+                         "prompt_tokens": data.get("prompt_eval_count"),
+                         "output_tokens": data.get("eval_count"), "raw": content[:4000]}
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        with self._client() as c:
-            r = c.post("/api/embed", json={"model": self._cfg.embedding_model, "input": texts,
-                                           "keep_alive": "30m"})
-            r.raise_for_status()
-            vectors = r.json().get("embeddings") or []
+        try:
+            with self._client() as c:
+                r = c.post("/api/embed", json={"model": self._cfg.embedding_model, "input": texts,
+                                               "keep_alive": "30m"})
+                r.raise_for_status()
+                vectors = r.json().get("embeddings") or []
+        except httpx.HTTPError as exc:
+            raise LlmError(f"embedding model unreachable at {self._cfg.host}: {exc}") from exc
         if len(vectors) != len(texts):
             raise LlmError(f"embedding returned {len(vectors)} vectors for {len(texts)} texts")
         return vectors

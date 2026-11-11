@@ -96,9 +96,15 @@ class FakeLlm:
         self.answers = list(answers)
         self.prompts: list[str] = []
 
-    def chat_json(self, system: str, user: str, schema: dict):
+    def _next(self, user: str):
         self.prompts.append(user)
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, Exception):
             raise answer
-        return answer, {"model": "fake", "elapsed_s": 0.0}
+        return answer
+
+    def chat_json(self, system: str, user: str, schema: dict):
+        return self._next(user), {"model": "fake", "elapsed_s": 0.0}
+
+    def chat_text(self, system: str, user: str):
+        return self._next(user), {"model": "fake", "elapsed_s": 0.0}

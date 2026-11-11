@@ -151,3 +151,14 @@ def test_probe_failures_while_container_down_belong_to_docker_side(config_file):
     for _ in range(5):
         p.handle(_r("refused"))
     assert not store.list()
+
+
+def test_log_crash_without_traceback_is_signed_by_the_matching_line(config_file):
+    cfg = config_file(FAST)
+    store = _store()
+    w = DockerWatcher(cfg, store, client_factory=lambda t: FakeDocker())
+    for line in ["Error: flood line 1", 'INFO: 172.0.0.2:4000 - "GET / HTTP/1.1" 200 OK']:
+        w.logs.add(0.0, line, "run1")
+        w.check_line(line, "run1")
+    assert _wait(lambda: any(e.kind == "crash" for e in store.list()))
+    assert store.list()[0].signature == "log:Error: flood line <n>"

@@ -69,3 +69,4 @@ volumes:
   agent-data:
   chroma:
   models:
+    name: iow-models  # shared by p2, p3 and bonus: the models download once

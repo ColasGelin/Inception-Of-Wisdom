@@ -23,6 +23,7 @@ from iow.observer.events import find_exception
 _FRAME = re.compile(r'File "(?P<path>[^"]+)", line (?P<line>\d+)(?:, in (?P<func>[^\s]+))?')
 _QUOTED = re.compile(r"""['"]([A-Za-z_][\w.]*)['"]""")
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_FROM_IMPORT = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+(.+)$")
 _STOP = set(keyword.kwlist) | {
     "self", "cls", "None", "True", "False", "str", "int", "dict", "list", "bool", "float", "print",
     "return", "app", "module", "line", "File", "name", "named", "No", "from", "import", "with",
@@ -30,6 +31,7 @@ _STOP = set(keyword.kwlist) | {
     "defined", "cannot", "is", "of", "in", "a", "an", "to", "get", "post", "router", "Traceback",
     "most", "recent", "call", "last", "os", "environ", "fastapi", "FastAPI", "APIRouter"}
 CHUNK_OPEN, CHUNK_CLOSE = "<<<CHUNK {id}>>>", "<<<END CHUNK>>>"
+SUMMARY_MAX = 600
 
 
 class Index(Protocol):
@@ -134,7 +136,10 @@ def rank_candidates(clues: Clues, index: Index, top_k: int, limit: int) -> tuple
         for p in table.env_readers(var):
             cand(p).add(3.0, f"reads env {var}")
     query = " ".join(filter(None, [clues.exc_type, clues.message] + clues.identifiers))
-    hits = index.search(query, top_k) if query.strip() else []
+    try:
+        hits = index.search(query, top_k) if query.strip() else []
+    except Exception:  # embeddings down: traceback + symbol table still give candidates
+        hits = []
     for h in hits:
         cand(h["path"]).add(2.0 * max(h["score"], 0.0), f"retrieval {h['score']:.2f} ({h['name']})")
     ranked = sorted(cands.values(), key=lambda c: c.score, reverse=True)[:limit]
@@ -165,22 +170,71 @@ def _numbered(chunk: dict) -> str:
 SYSTEM = (
     "You are a debugging assistant for a small Python web service that crashed on start. "
     "From the numbered candidate files, choose the file or files that must be edited to fix the "
-    "crash, and explain in one short paragraph what is wrong and why. Only use paths from the "
-    "candidate list. Reply with JSON only.")
+    "crash, and explain in one short paragraph what is wrong and why. Prefer fixing the failing "
+    "line itself (the last traceback frame inside the project) over changing or creating other "
+    "modules; choose another file only if the fix clearly belongs there. The fix must be a change "
+    "to the project's source files: installing packages or changing the environment is not "
+    "possible. Only use paths from the candidate list. Reply with JSON only.")
 
 
-def build_prompt(clues: Clues, cands: list[Candidate], chunks: list[dict]) -> str:
-    listing = "\n".join(f"{i}. {c.path}  ({'; '.join(c.reasons[:3])})" for i, c in enumerate(cands, 1))
+def index_facts(clues: Clues, table: SymbolTable, for_patch: bool = False) -> list[str]:
+    """Plain statements the index can prove, so the model does not have to infer them.
+
+    `for_patch` adds where each name of a broken import really lives: what the patch step
+    needs, but it pulled the 1.5B model's *choice of file* towards the definer (observed).
+    """
+    facts = []
+    import_error = clues.exc_type in ("ModuleNotFoundError", "ImportError")
+    for ident in clues.identifiers[:8]:
+        defs = table.definers(ident)
+        if defs:
+            facts.append(f"`{ident}` is defined in {', '.join(defs)}")
+        elif import_error and table.importers(ident):
+            facts.append(f"no module or symbol named `{ident}` exists in the project "
+                         f"(imported by {', '.join(table.importers(ident))})")
+    raised = clues.target_frames[-1] if clues.target_frames else None
+    m = _FROM_IMPORT.match(raised["code"].splitlines()[0]) if raised and raised["code"] else None
+    if for_patch and m and not any(s.module == m.group(1) for s in table.table.values()):
+        # The failing line imports from a module the project does not have: say where each
+        # imported name really lives (a symbol-table fact, not a guess).
+        for name in (n.strip(" ()").split(" as ")[0] for n in m.group(2).split(",")):
+            for d in table.definers(name):
+                facts.append(f"the failing line imports `{name}` from `{m.group(1)}`, which does not "
+                             f"exist; `{name}` is defined in {d}, importable as "
+                             f"`from {table.table[d].module} import {name}`")
+    for var in clues.env_vars:
+        readers = table.env_readers(var)
+        if readers:
+            facts.append(f"environment variable {var} is read in {', '.join(readers)}")
+    return list(dict.fromkeys(facts))
+
+
+def build_prompt(clues: Clues, cands: list[Candidate], chunks: list[dict],
+                 facts: list[str] | None = None) -> str:
+    raised = clues.target_frames[-1] if clues.target_frames else None
+
+    def label(c: Candidate) -> str:
+        if raised and c.path == raised["path"]:
+            code = raised["code"].splitlines()[0] if raised["code"] else ""
+            return f"contains the failing line {raised['line']}" + (f": `{code}`" if code else "")
+        return "; ".join(r for r in c.reasons[:3] if not r.startswith("traceback"))
+
+    listing = "\n".join(f"{i}. {c.path}  ({label(c)})" for i, c in enumerate(cands, 1))
     code = "\n\n".join(f"{CHUNK_OPEN.format(id=c['id'])}\n{_numbered(c)}\n{CHUNK_CLOSE}" for c in chunks)
+    fact_block = ("FACTS FROM THE CODE INDEX:\n" + "\n".join(f"- {f}" for f in facts) + "\n\n") if facts else ""
     return (f"CRASH LOG (traceback, target files only):\n{clues.condensed}\n\n"
+            f"{fact_block}"
             f"CANDIDATE FILES (choose only from these):\n{listing}\n\n"
             f"RELEVANT CODE (line numbers on the left):\n{code}\n\n"
-            'Answer as {"summary": "<one paragraph>", "files": ["<path from the list>"]}.')
+            'Answer as {"summary": "<one short paragraph>", "files": ["<the file(s) to edit>"]}.')
 
 
 def schema_for(paths: list[str]) -> dict[str, Any]:
+    # Summary first: the model reasons, then names the files its own reasoning points to.
+    # maxLength: an unbounded string lets a small model ramble until Ollama gives up
+    # (observed: done=false after ~300 tokens, i.e. truncated, invalid JSON).
     return {"type": "object", "required": ["summary", "files"],
-            "properties": {"summary": {"type": "string"},
+            "properties": {"summary": {"type": "string", "minLength": 20, "maxLength": SUMMARY_MAX},
                            "files": {"type": "array", "minItems": 1, "maxItems": 3,
                                      "items": {"type": "string", "enum": paths}}}}
 
@@ -221,7 +275,10 @@ def diagnose(excerpt: str, index: Index, llm: Llm, top_k: int, max_candidates: i
     chunks = context_chunks(clues, cands, hits, index)
     base["chunks"] = chunks
     paths = [c.path for c in cands]
-    prompt = build_prompt(clues, cands, chunks) + (f"\n\nNOTE: {feedback}" if feedback else "")
+    table = index.symbol_table()
+    facts = index_facts(clues, table)
+    base["facts"], base["patch_facts"] = facts, index_facts(clues, table, for_patch=True)
+    prompt = build_prompt(clues, cands, chunks, facts) + (f"\n\nNOTE: {feedback}" if feedback else "")
     try:
         answer, stats = llm.chat_json(SYSTEM, prompt, schema_for(paths))
     except Exception as exc:
@@ -231,4 +288,20 @@ def diagnose(excerpt: str, index: Index, llm: Llm, top_k: int, max_candidates: i
     if isinstance(checked, str):
         return {**base, "ok": False, "stage": "validate", "reason": checked}
     files, summary = checked
+    raised = clues.target_frames[-1] if clues.target_frames else None
+    if raised and raised["path"] in paths and raised["path"] not in files:
+        # Consistency check by the index: the model skipped the file holding the failing line.
+        # Ask once more with that observation; the model still makes the final choice.
+        note = (f"Your previous answer chose {', '.join(files)}, but the failing line is in "
+                f"{raised['path']} line {raised['line']}. Check whether that line itself is what "
+                "must change.")
+        try:
+            second, stats2 = llm.chat_json(SYSTEM, f"{prompt}\n\nNOTE: {note}", schema_for(paths))
+        except Exception as exc:
+            second, stats2 = {}, {"error": str(exc)}
+        rechecked = validate(second, paths, set(known))
+        base["first_answer"], base["reasked"] = answer, note
+        if not isinstance(rechecked, str):
+            files, summary = rechecked
+            base.update(answer=second, llm=stats2)
     return {**base, "ok": True, "summary": summary, "files": files}

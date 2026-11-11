@@ -112,3 +112,41 @@ def test_retrieval_alone_is_not_evidence(index):
     llm = FakeLlm({"summary": "x" * 20, "files": ["app/main.py"]})
     d = diagnose("RuntimeError: worker crashed unexpectedly\n", index, llm, top_k=5, max_candidates=4)
     assert d["ok"] is False and d["stage"] == "evidence" and llm.prompts == []
+
+
+def test_index_reasks_once_when_the_failing_line_file_is_skipped(index):
+    llm = FakeLlm({"summary": "greet lives in text.py, something is off there.", "files": ["app/text.py"]},
+                  {"summary": "main.py imports greet from a module that does not exist.", "files": ["app/main.py"]})
+    d = diagnose(IMPORT_LOG, index, llm, top_k=5, max_candidates=4)
+    assert d["ok"] and d["files"] == ["app/main.py"] and d["first_answer"]["files"] == ["app/text.py"]
+    assert len(llm.prompts) == 2 and "failing line is in app/main.py line 3" in llm.prompts[1]
+
+
+def test_reask_keeps_the_model_choice_when_it_insists(index):
+    llm = FakeLlm({"summary": "the fix belongs in text.py for this crash.", "files": ["app/text.py"]})
+    d = diagnose(IMPORT_LOG, index, llm, top_k=5, max_candidates=4)
+    assert d["ok"] and d["files"] == ["app/text.py"] and len(llm.prompts) == 2
+
+
+def test_facts_for_the_patch_say_where_imported_names_live(index):
+    from iow.analyst.diagnose import index_facts
+    clues = parse_log(IMPORT_LOG, index.paths())
+    patch_facts = index_facts(clues, index.symbol_table(), for_patch=True)
+    assert any("`from app.text import greet`" in f for f in patch_facts)
+    assert not any("from app.text import" in f for f in index_facts(clues, index.symbol_table()))
+
+
+def test_retrieval_down_still_uses_traceback_and_symbols(index, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("embedding model unreachable")
+    monkeypatch.setattr(index, "search", boom)
+    llm = FakeLlm({"summary": "main.py imports greet from a missing module.", "files": ["app/main.py"]})
+    d = diagnose(IMPORT_LOG, index, llm, top_k=5, max_candidates=4)
+    assert d["ok"] and d["files"] == ["app/main.py"] and d["retrieval"] == []
+
+
+def test_llm_down_is_an_explicit_failure(index):
+    from iow.llm import LlmError
+    d = diagnose(IMPORT_LOG, index, FakeLlm(LlmError("LLM unreachable at http://ollama:11434")),
+                 top_k=5, max_candidates=4)
+    assert d["ok"] is False and d["stage"] == "llm" and "unreachable" in d["reason"]

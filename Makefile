@@ -24,7 +24,7 @@ help:
 # UID/GID of the host user owning the workspace, and the group owning the
 # Docker socket as containers see it (differs between Linux and Docker Desktop).
 env:
-	@mkdir -p $(PART)/.runtime/target
+	@mkdir -p $(PART)/.runtime/target exports
 	@printf 'IOW_UID=%s\nIOW_GID=%s\nDOCKER_GID=%s\nIOW_PORT=%s\n' "$$(id -u)" "$$(id -g)" \
 	  "$$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock python:3.12-slim stat -c %g /var/run/docker.sock)" \
 	  "$(IOW_PORT)" > $(PART)/.env

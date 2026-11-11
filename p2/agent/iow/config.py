@@ -102,6 +102,8 @@ def parse(text: str) -> Config:
 
 
 def _short_error(exc: Exception) -> str:
+    if isinstance(exc, yaml.MarkedYAMLError) and exc.problem_mark is not None:
+        return f"YAML syntax error line {exc.problem_mark.line + 1}: {exc.problem}"
     if isinstance(exc, ValidationError):
         return "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
     return f"{type(exc).__name__}: {exc}".splitlines()[0]

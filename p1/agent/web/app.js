@@ -214,7 +214,7 @@ tabHandlers.analyst = {
     pm.classList.remove("hidden");
     pm.textContent = m.model ? `model: ${m.model} · ${m.params_human} params` : `model: ${a.state}`;
     pm.className = `pill ${m.under_3b ? "ok" : a.state === "error" ? "bad" : "warn"}`;
-    pm.dataset.tip = m.parameter_count ? `${m.parameter_count.toLocaleString()} parameters (read from Ollama /api/show)` : "";
+    pm.title = m.parameter_count ? `${m.parameter_count.toLocaleString()} parameters (read from Ollama /api/show)` : "";
     const ix = a.index || {}, ls = ix.last_sync || {};
     $("#an-index").innerHTML = `<dt>state</dt><dd class="${a.state === "ready" ? "ok" : a.state === "error" ? "bad" : "warn"}">${esc(a.state)}${a.error ? ` — ${esc(a.error)}` : ""}</dd>
       <dt>files / chunks</dt><dd>${ix.files ?? "—"} / ${ix.chunks ?? "—"}</dd>
@@ -226,6 +226,111 @@ tabHandlers.analyst = {
       <dt>parameters</dt><dd class="${m.under_3b ? "ok" : "bad"}">${m.parameter_count ? m.parameter_count.toLocaleString() : "?"} (${esc(m.params_human)}) ${m.under_3b ? "&lt; 3B ✓" : "NOT under 3B"}</dd>
       <dt>quantization</dt><dd>${esc(m.quantization || "—")}</dd><dt>runtime</dt><dd>local Ollama, temperature 0, fixed seed, JSON schema output</dd>`
       : `<dt>state</dt><dd>${esc(a.state)}</dd>`;
+  },
+};
+
+// ---------------------------------------------------------------- Wisdom Loop (tab 3)
+const STATE_BADGE = { running: "info", healed: "ok", rolled_back: "crash", failed: "crash", interrupted: "suggestion" };
+const STATE_LABEL = { running: "running", healed: "HEALED", rolled_back: "CLEAN FAILURE: rolled back", failed: "FAILED", interrupted: "interrupted" };
+const S3 = { heals: new Map(), open: new Set() };
+const short = (sha) => (sha ? sha.slice(0, 8) : "—");
+function stepsHtml(steps) {
+  return `<div class="steps">${steps.map((s) => `<span class="step ${s.ok === true ? "pass" : s.ok === false ? "fail" : "run"}" title="${esc(s.detail)}">${esc(s.name)}${s.llm ? " · llm" : ""}${s.ended_at ? ` · ${(s.ended_at - s.started_at).toFixed(1)}s` : ""}</span>`).join("")}</div>`;
+}
+function attemptHtml(a) {
+  const d = a.diagnosis || {};
+  const checks = (a.checks || []).map((c) => `<tr><td>${c.passed ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'}</td><td>${esc(c.name)}</td><td class="muted">${esc(c.detail)}</td></tr>`).join("");
+  const h = a.health;
+  const extra = tabHandlers.bonus && tabHandlers.bonus.attemptExtra ? tabHandlers.bonus.attemptExtra(a) : "";
+  return `<div class="attempt">
+    <div class="row"><b>Attempt ${a.n}</b> <span class="badge ${a.outcome === "healed" ? "ok" : a.outcome ? "crash" : "info"}">${esc(a.outcome || "in progress")}</span>
+      ${a.commit ? `<span class="mono">commit ${short(a.commit)}</span>` : ""}</div>
+    ${stepsHtml(a.steps)}
+    ${d.ok ? `<p><b>Diagnosis:</b> ${d.files.map((f) => `<code>${esc(f)}</code>`).join(", ")}: ${esc(d.summary)}</p>`
+      : d.reason ? `<div class="fail">Diagnosis failed (${esc(d.stage)}): ${esc(d.reason)}</div>` : ""}
+    ${a.feedback ? `<p class="muted">Input to this attempt included: ${esc(a.feedback)}</p>` : ""}
+    ${a.patch ? `<details><summary>patch JSON (${a.patch.files.length} file${a.patch.files.length > 1 ? "s" : ""}): ${esc(a.patch.summary)}</summary><pre class="code">${esc(JSON.stringify(a.patch, null, 2))}</pre></details>` : ""}
+    ${extra}
+    ${checks ? `<details><summary>sanity checks (${a.checks.filter((c) => c.passed).length}/${a.checks.length} passed)</summary><table>${checks}</table></details>` : ""}
+    ${a.commit_message ? `<details><summary>commit message</summary><pre class="code">${esc(a.commit_message)}</pre></details>` : ""}
+    ${h ? `<p><b>Post-restart health:</b> <span class="${h.healed ? "ok" : "bad"}">${h.healed ? "healthy" : "not healed"}</span> — ${esc(h.reason)}</p>
+      ${h.excerpt && !h.healed ? `<details><summary>new error log (fed to the next attempt)</summary><pre class="code">${esc(h.excerpt)}</pre></details>` : ""}` : ""}
+  </div>`;
+}
+function healHtml(h) {
+  const rb = h.rollback && h.rollback.verify;
+  const open = S3.open.has(h.id) || h.state === "running";
+  return `<div class="heal" data-id="${h.id}">
+    <div class="head"><span><span class="badge ${STATE_BADGE[h.state] || ""}">${esc(STATE_LABEL[h.state] || h.state)}</span>
+      <span class="mono">${esc(h.signature)}</span></span>
+      <span class="muted">${fmtTime(h.started_at)} · ${h.attempts.length} attempt(s)${h.ended_at ? ` · ${(h.ended_at - h.started_at).toFixed(0)}s` : ` · ${esc(h.phase)}`}
+        · original ${esc(h.original ? `${h.original.branch} @ ${short(h.original.sha)}` : "—")}</span></div>
+    <details class="body" ${open ? "open" : ""} data-heal="${h.id}"><summary>details</summary>
+      ${h.reason ? `<p class="${h.state === "healed" ? "" : "bad"}">${esc(h.reason)}</p>` : ""}
+      ${h.attempts.map(attemptHtml).join("")}
+      ${rb ? `<div class="attempt"><b>Rollback</b> ${stepsHtml(h.steps.filter((s) => s.name !== "snapshot"))}
+        <table>${[["HEAD is the original commit", rb.head_matches], ["git status clean", rb.status_clean], ["git diff &lt;original&gt; empty", rb.diff_empty],
+          ["every file hashes to the original blob", rb.blobs_match], ["agent commits unreachable from refs", rb.agent_commits_unreachable]]
+          .filter(([, v]) => v !== undefined).map(([k, v]) => `<tr><td>${v ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'}</td><td>${k}</td></tr>`).join("")}</table>
+        <p class="muted">Target restarted on ${short(rb.expected)}: ${esc(h.rollback.health ? h.rollback.health.reason : "")}</p></div>` : ""}
+      ${tabHandlers.bonus && tabHandlers.bonus.healExtra ? tabHandlers.bonus.healExtra(h) : ""}
+      <details><summary>agent log of this heal (${(h.log || []).length} lines)</summary><pre class="code">${esc((h.log || []).map((e) => `${fmtTime(e.ts)} ${e.text}`).join("\n"))}</pre></details>
+    </details></div>`;
+}
+function renderHeals() {
+  const list = [...S3.heals.values()].sort((a, b) => b.started_at - a.started_at);
+  $("#lp-heals").innerHTML = list.length ? list.map(healHtml).join("") : '<p class="muted">No heal yet. Plant a bug: <code>make bug BUG=syntax</code></p>';
+  document.querySelectorAll("#lp-heals details[data-heal]").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.open) S3.open.add(d.dataset.heal); else S3.open.delete(d.dataset.heal);
+  }));
+  if (tabHandlers.bonus && tabHandlers.bonus.onHeals) tabHandlers.bonus.onHeals(list);
+}
+function renderLoopStatus(ls) {
+  const g = ls.guards, c = ls.config;
+  const ks = $("#kill-switch");
+  ks.checked = g.enabled;
+  $("#kill-switch-wrap").className = `pill switch ${g.enabled ? "ok" : "bad"}`;
+  $("#kill-switch-label").textContent = g.enabled ? "auto-heal: on" : "auto-heal: OFF (kill switch)";
+  const cur = ls.current;
+  $("#lp-state").innerHTML = cur ? `<span class="info">HEALING</span> ${esc(cur.signature)} — attempt ${cur.attempt}, step <b>${esc(cur.phase)}</b>`
+    : g.enabled ? '<span class="ok">IDLE</span>, watching for crash events' : '<span class="bad">KILL SWITCH ON</span>: every new heal is refused';
+  const cds = Object.entries(g.cooldowns);
+  $("#lp-guards").innerHTML = `<dt>single-flight</dt><dd>${g.busy ? "busy (one heal running)" : "free"}</dd>
+    <dt>heals in the last hour</dt><dd>${g.heals_last_hour} / ${g.max_heals_per_hour}</dd>
+    <dt>heals this process</dt><dd>${g.lifetime} / ${g.max_heals_lifetime}</dd>
+    <dt>cooldowns</dt><dd>${cds.length ? cds.map(([s, left]) => `${esc(s)}: ${left}s`).join("<br>") : "none"}</dd>`;
+  $("#lp-config").innerHTML = `<dt>grace_period_s</dt><dd>${c.grace_period_s}</dd><dt>max_attempts</dt><dd>${c.max_attempts}</dd>
+    <dt>cooldown_per_signature_s</dt><dd>${c.cooldown_per_signature_s}</dd><dt>max_heals_per_hour</dt><dd>${c.max_heals_per_hour}</dd>
+    <dt>max_heals_lifetime</dt><dd>${c.max_heals_lifetime}</dd><dt>branch</dt><dd>${esc(c.branch)}</dd>`;
+  $("#lp-refusals").innerHTML = ls.refusals.length ? ls.refusals.slice().reverse().map((r) =>
+    `<tr><td class="mono">${esc(r.signature)}</td><td>${esc(r.reason)}</td><td>${r.count}×</td><td>${ago(r.last_seen)}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="muted">none</td></tr>';
+}
+tabHandlers.loop = {
+  init() {
+    $("#kill-switch-wrap").classList.remove("hidden");
+    $("#kill-switch").addEventListener("change", async (e) => {
+      try { await api("/loop/kill-switch", { method: "POST", body: JSON.stringify({ enabled: e.target.checked }) }); }
+      catch (err) { alert(err.message); }
+      api("/loop/status").then(renderLoopStatus);
+    });
+    $("#tab-loop").innerHTML = `
+      <div class="card" style="margin-bottom:16px"><h2>Loop</h2><p id="lp-state"></p>
+        <p class="hint">observe → think → act → verify. On a crash: snapshot the commit, then up to 3 × (diagnose → patch → sanity checks → apply → commit on the heal branch → restart → verify). Not healed after the last attempt: git reset to the snapshot, restart, prove the tree is byte-for-byte the original.</p></div>
+      <div class="grid two">
+        <div class="card"><h2>Safety bounds</h2><dl class="kv" id="lp-guards"></dl></div>
+        <div class="card"><h2>Active timing <span class="muted">iow.config.yml, hot-reloaded</span></h2><dl class="kv" id="lp-config"></dl></div>
+      </div>
+      <div id="lp-bonus"></div>
+      <div class="card" style="margin-bottom:16px"><h2>Heals <span class="muted">every attempt, newest first</span></h2><div id="lp-heals"></div></div>
+      <div class="card"><h2>Refused triggers</h2><p class="hint">Crash events the bounds did not let through (deduplicated).</p>
+        <table><thead><tr><th>signature</th><th>reason</th><th>count</th><th>last</th></tr></thead><tbody id="lp-refusals"></tbody></table></div>`;
+    api("/loop/heals").then((r) => { r.heals.forEach((h) => S3.heals.set(h.id, h)); renderHeals(); });
+  },
+  onStatus(st) { if (st.loop) renderLoopStatus(st.loop); },
+  onEvent(type, data) {
+    if (type === "heal") { S3.heals.set(data.id, data); renderHeals(); }
+    if (type === "loop_status") renderLoopStatus(data);
   },
 };
 

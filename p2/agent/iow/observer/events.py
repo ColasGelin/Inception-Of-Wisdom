@@ -153,7 +153,7 @@ class EventStore:
         """Flag the most recent crash since `since` as a restart loop."""
         with self._lock:
             ev = next((e for e in reversed(self._events)
-                       if e.kind == "crash" and e.last_seen >= since and e.source != "http"), None)
+                       if e.kind == "crash" and e.last_seen >= since and e.exit_code not in (None, 0)), None)
             if ev is None or ev.restart_loop:
                 return None
             ev.restart_loop = True

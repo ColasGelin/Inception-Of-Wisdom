@@ -21,7 +21,8 @@ from docker.errors import NotFound
 
 from iow.bus import bus, say
 from iow.config import ConfigStore
-from iow.observer.events import EventStore, excerpt_of, signature_from_log
+from iow.observer.events import (EventStore, excerpt_of, find_exception, normalise,
+                                 signature_from_log)
 
 DOCKER_URL = "unix:///var/run/docker.sock"
 
@@ -136,6 +137,10 @@ class DockerWatcher:
         self._set_state(docker_ok=False, docker_error=f"{type(exc).__name__}: {exc}"[:200],
                         state="unknown")
 
+    def refresh_now(self) -> None:
+        """Synchronous state refresh (used by VERIFY so it never reads a stale state)."""
+        self.refresh_state(self._client_factory(10))
+
     def restart_target(self) -> None:
         """Restart (or start, if exited) the target container. Raises on failure."""
         stop_timeout = self.config.get().loop.restart_timeout_s
@@ -230,7 +235,11 @@ class DockerWatcher:
         try:
             c = client.containers.get(self.name)
             run_id = c.attrs.get("State", {}).get("StartedAt")
-            raw = c.logs(tail=400, stdout=True, stderr=True)
+            # Only this run's output: container logs keep earlier runs, whose traceback would
+            # otherwise be blamed for this exit (seen with `docker kill` on a healed target).
+            started = _parse_ts(run_id) if run_id else 0.0
+            since = started if started > 0 else None  # sub-second: a crash loop restarts fast
+            raw = c.logs(tail=400, stdout=True, stderr=True, since=since)
             lines = raw.decode("utf-8", "replace").splitlines()
         except Exception:
             lines = self.logs.run_lines(self.state.started_at)
@@ -295,16 +304,19 @@ class DockerWatcher:
             if self._pending_log_crash is not None:
                 return  # one crash per burst: the timer reads the whole excerpt
             settle = self.config.get().observer.log_settle_s
-            self._pending_log_crash = threading.Timer(settle, self._flush_log_crash, args=(run_id,))
+            self._pending_log_crash = threading.Timer(settle, self._flush_log_crash,
+                                                      args=(run_id, line))
             self._pending_log_crash.daemon = True
             self._pending_log_crash.start()
 
-    def _flush_log_crash(self, run_id: str | None) -> None:
+    def _flush_log_crash(self, run_id: str | None, matched: str) -> None:
         with self._lock:
             self._pending_log_crash = None
         obs = self.config.get().observer
         excerpt = excerpt_of(self.logs.run_lines(run_id), obs.log_excerpt_lines)
-        sig = signature_from_log(excerpt)
+        # Without a traceback, the line that matched an error pattern is the failure, not
+        # whatever was printed last (often a probe's access log line).
+        sig = signature_from_log(excerpt) if find_exception(excerpt) else f"log:{normalise(matched)}"
         ev, new = self.events.record("crash", "logs", sig, run_id=run_id,
                                      message="error pattern in target logs", log_excerpt=excerpt,
                                      status=self.state.state)

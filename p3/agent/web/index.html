@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inception-of-Wisdom</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">Inception-of-Wisdom <span class="muted">observe · think · act · verify</span></div>
+  <div class="pills">
+    <span class="pill" id="pill-target">target: …</span>
+    <span class="pill" id="pill-docker">docker: …</span>
+    <span class="pill hidden" id="pill-model">model: …</span>
+    <label class="pill switch hidden" id="kill-switch-wrap"
+           title="Global kill switch. Off = every new heal is refused.">
+      <input type="checkbox" id="kill-switch"> <span id="kill-switch-label">auto-heal</span>
+    </label>
+  </div>
+</header>
+<div class="banner hidden" id="config-error"></div>
+<nav class="tabs">
+  <button data-tab="observer" class="active">1 · Observer</button>
+  <button data-tab="analyst" class="hidden">2 · Analyst</button>
+  <button data-tab="loop" class="hidden">3 · Wisdom Loop</button>
+</nav>
+
+<main>
+  <!-- ======================= Observer ======================= -->
+  <section id="tab-observer" class="tab active">
+    <div class="grid two">
+      <div class="card">
+        <h2>Target health</h2>
+        <dl class="kv" id="health"></dl>
+        <h3>HTTP probes</h3>
+        <table class="probes"><thead><tr><th>URL</th><th>result</th><th>latency</th></tr></thead>
+          <tbody id="probes"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Events <span class="muted" id="events-count"></span></h2>
+        <p class="hint">Crashes are deduplicated by signature: the same failure bumps the count instead of adding rows.
+          Suggestions (4xx) are shown but never patched.</p>
+        <div id="events" class="events"></div>
+      </div>
+    </div>
+    <div class="grid two">
+      <div class="card">
+        <h2>Target logs <span class="muted">live</span></h2>
+        <pre id="target-logs" class="log"></pre>
+      </div>
+      <div class="card">
+        <h2>Agent log</h2>
+        <pre id="agent-logs" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= Analyst ======================= -->
+  <section id="tab-analyst" class="tab"></section>
+
+  <!-- ======================= Wisdom Loop ======================= -->
+  <section id="tab-loop" class="tab"></section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

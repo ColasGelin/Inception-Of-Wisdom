@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import threading
 import time
+from collections import deque
 from typing import Any
 
 
@@ -54,14 +57,16 @@ class AgentLog:
     (the wisdom loop attaches one to capture the lines of the heal in progress)."""
 
     def __init__(self, maxlen: int = 500) -> None:
-        from collections import deque
         self.lines: deque[dict[str, Any]] = deque(maxlen=maxlen)
+        self._lock = threading.Lock()
         self.hooks: list[Any] = []
 
     def say(self, component: str, message: str) -> dict[str, Any]:
         entry = {"ts": time.time(), "component": component, "message": message,
                  "text": f"[{component}] {message}"}
-        print(entry["text"], flush=True)
+        with self._lock:  # threads print too: one write per line, never interleaved
+            sys.stdout.write(entry["text"] + "\n")
+            sys.stdout.flush()
         self.lines.append(entry)
         bus.publish("agent_log", entry)
         for hook in list(self.hooks):

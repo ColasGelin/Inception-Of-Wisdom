@@ -106,7 +106,9 @@ def test_listeners_see_new_and_updates():
 
 def test_restart_loop_flag():
     s = _store()
-    s.record("crash", "docker", "E", run_id="a", now=10.0)
+    s.record("crash", "logs", "log:noise", run_id="a", now=11.0)  # no exit code: not a restart
+    s.record("crash", "docker", "E", run_id="a", now=10.0, exit_code=1)
     ev = s.mark_restart_loop(since=0.0, status="restart loop: 3 starts in 60s")
+    assert ev is not None and ev.signature == "E"
     assert ev is not None and ev.restart_loop
     assert s.mark_restart_loop(since=0.0, status="again") is None  # flagged once

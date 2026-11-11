@@ -75,3 +75,42 @@ evaluator would expect.
   >= 3B, so changing `llm.model` to a bigger model cannot silently break the rule.
 - Ollama has no published host port (CPU inference, compose network only), which also avoids
   clashing with a host Ollama on 11434.
+
+## Wisdom Loop
+- **File contents never travel inside JSON from the model.** Observed with qwen2.5-coder:1.5b and
+  Ollama structured output: the model writes `return {"` without escaping the quote, which closes the
+  JSON string and truncates the file (586 -> 83 bytes; the 60 % shrink check caught it every time).
+  So the patch step makes one plain-text call per suspect file (temperature 0, fixed seed) asking for
+  `SUMMARY: ...` plus the complete file in one code block, and the agent builds the patch JSON
+  `{summary, files: [{path, op, content}]}` itself. The patch format, the full-file contents and the
+  sanity checks are exactly the subject's; structured output stays on the diagnosis call, where it works.
+- **The index helps the model, it never edits for it.** The diagnosis prompt carries facts the symbol
+  table can prove ("no module named `helpers` exists", "`greet` is defined in app/text.py"); the patch
+  prompt adds where each name of a broken import lives (`from app.text import greet`). That last fact is
+  kept out of the diagnosis prompt: it pulled the 1.5B model's choice of file towards the definer.
+- **One consistency re-ask.** If the model's chosen files omit the file containing the failing line,
+  it is asked once more with that observation; whatever it answers then is final. (The import bug went
+  from roughly 50/50 to 3/3 on the right file.)
+- **Prompts state the real constraint**: the fix must be a source change; installing packages is not
+  possible. Without it the model "fixed" a missing module with `pip install`.
+- **Diagnosis summary has a `maxLength`**: unbounded, the model rambled until Ollama returned
+  `done: false` (invalid JSON).
+- **Snapshot refuses a dirty tree** instead of committing someone's uncommitted edits.
+- **What aborts vs retries.** Unusable diagnosis or an unreachable LLM ends the heal at once (rollback;
+  retrying the same input cannot help, and the pipeline does not guess). A patch rejected by the sanity
+  checks, an unusable patch answer or a failed verify go to the next attempt with that feedback and the
+  new error log.
+- **VERIFY ignores stale reports**: crash events whose run id is the run that was just replaced do not
+  count; crashes from the loop's own restarts are recorded but never trigger a new heal (single-flight),
+  and every signature seen during a heal gets a cooldown when it ends.
+- **A python syntax check** (`compile`) is added to the four required sanity checks, plus safe-path,
+  op/existence and no-op checks: cheap, and it saves a restart on obviously broken code.
+- **Kill switch** = a runtime flag initialised from `loop.enabled`, flippable from the dashboard/API and
+  persisted in the agent's state volume, so a restart does not silently re-enable healing. Editing
+  `loop.enabled` in the file also sets it. A heal already running finishes (healed or rolled back).
+- **Lifetime cap and cooldowns are per agent process**, as the subject's "hard cap over the process
+  lifetime" says; the hourly window is a real sliding hour.
+- **If the agent dies mid-heal**, the history marks the heal `interrupted` and the next start rolls the
+  workspace back to the recorded original commit and verifies it.
+- **History** = JSON lines in the `agent-data` volume, one full snapshot per transition, so the third tab
+  survives restarts and `make export-run` can replay a run.
