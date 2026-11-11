@@ -56,7 +56,7 @@ class Backoff:
         self._next = self._first
 
 
-def _parse_ts(ts: str) -> float:
+def parse_ts(ts: str) -> float:
     # Docker gives RFC3339 with nanoseconds; Python only parses microseconds.
     m = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?Z?", ts)
     if not m:
@@ -248,10 +248,15 @@ class DockerWatcher:
         run_id, lines = None, []
         try:
             c = client.containers.get(self.name)
-            run_id = self._run_id or c.attrs.get("State", {}).get("StartedAt")
+            current = c.attrs.get("State", {}).get("StartedAt")
+            # The dead run is the current one unless Docker already started the next run.
+            run_id = current if current and parse_ts(current) <= died else self._run_id
             since = int(started) if started else None  # API resolution is 1 s
             raw = c.logs(tail=400, stdout=True, stderr=True, since=since, until=int(died) + 1)
             lines = raw.decode("utf-8", "replace").splitlines()
+            if not lines:  # rare empty window (observed once): the tail up to the death
+                raw = c.logs(tail=400, stdout=True, stderr=True, until=int(died) + 1)
+                lines = raw.decode("utf-8", "replace").splitlines()
         except Exception:
             lines = self.logs.run_lines(self.state.started_at)
         obs = self.config.get().observer
@@ -302,7 +307,7 @@ class DockerWatcher:
             self._seen_set.discard(self._seen[0])
         self._seen.append(key)
         self._seen_set.add(key)
-        ts = _parse_ts(ts_text)
+        ts = parse_ts(ts_text)
         self.logs.add(ts, line, run_id)
         self.check_line(line, run_id)
         return ts

@@ -1,6 +1,7 @@
 """The whole loop on a temporary git repository, with a fake Docker target and a fake LLM."""
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 from fakes import FakeLlm
@@ -24,14 +25,19 @@ class FakeTarget:
 
     def __init__(self, ws, events):
         self.ws, self.events = ws, events
-        self.state = TargetState(container="iow-target", state="restarting", started_at="r0", docker_ok=True)
+        self.state = TargetState(container="iow-target", state="restarting",
+                                 started_at="2026-01-01T00:00:00.000000Z", docker_ok=True)
         self.logs = LogBuffer()
         self.restarts = 0
+        self.stale_kill = False
+        self.actual_run = self.state.started_at  # what Docker knows; the polled state can lag
 
     def restart_target(self):
         self.restarts += 1
-        run = f"r{self.restarts}"
-        self.state.started_at = run
+        if self.stale_kill:  # Docker reports the replaced run's death (137) after the restart began
+            self.events.record("crash", "docker", "exit:137", run_id=self.actual_run, exit_code=137)
+        run = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self.state.started_at = self.actual_run = run
         if "BUG" in (self.ws / "app" / "main.py").read_text():
             self.state.state = "restarting"
             self.events.record("crash", "docker", "NameError: name 'BUG' is not defined", run_id=run,
@@ -40,7 +46,7 @@ class FakeTarget:
             self.state.state = "running"
 
     def refresh_now(self):
-        pass
+        self.state.started_at = self.actual_run
 
     @property
     def healthy(self):
@@ -225,3 +231,13 @@ def test_history_survives_a_restart(setup, tmp_path):
     run_heal(rt)
     reloaded = HistoryStore(tmp_path / "history.jsonl")
     assert reloaded.latest("healed")["attempts"][0]["outcome"] == "healed"
+
+
+def test_the_replaced_runs_own_death_does_not_fail_verify(setup):
+    make, ws = setup
+    rt = make(answer(FIXED))
+    rt.docker.stale_kill = True
+    rt.docker.actual_run = "2026-01-01T00:00:05.000000Z"  # crash loop moved on since the last poll
+    rt.docker.refresh_now = lambda: None  # and the refresh does not help: only the start-time rule does
+    loop, heal = run_heal(rt)
+    assert heal["state"] == "healed" and len(heal["attempts"]) == 1

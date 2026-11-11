@@ -26,6 +26,7 @@ from iow.bus import agent_log, bus, say
 from iow.loop import git_ops
 from iow.loop.guards import Guards
 from iow.loop.patch import Patch, apply_patch, failed, propose_patch, sanity_checks
+from iow.observer.docker_watch import parse_ts
 from iow.observer.events import Event, excerpt_of
 from iow.observer.http_probe import probe_once
 from iow.store import HistoryStore
@@ -335,6 +336,10 @@ class WisdomLoop:
 
     async def _restart(self, heal: dict, attempt: dict | None) -> tuple[float, str | None, bool]:
         step = self._step(heal, attempt, "restart")
+        try:
+            await asyncio.to_thread(self.rt.docker.refresh_now)
+        except Exception:
+            pass  # Docker unreachable: the restart below reports it
         run_before = self.rt.docker.state.started_at
         t0 = time.time()
         try:
@@ -348,9 +353,14 @@ class WisdomLoop:
             return t0, run_before, False
 
     def _crash_after(self, t0: float, run_before: str | None) -> Event | None:
+        """A crash of a run that started after our restart. Reports about the run being replaced
+        (its `die` with 137 when the restart kills it, for instance) arrive after t0 too: they do
+        not count, whatever the poll state said that run was."""
         for ev in self.rt.events.crashes_since(t0):
-            if ev.run_id is None or ev.run_id != run_before:
-                return ev  # stale reports from the run we just replaced do not count
+            if ev.run_id is None:
+                return ev
+            if ev.run_id != run_before and parse_ts(ev.run_id) >= t0 - 1:
+                return ev
         return None
 
     async def _restart_and_verify(self, heal: dict, attempt: dict | None) -> dict[str, Any]:
