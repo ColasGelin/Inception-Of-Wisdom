@@ -1,0 +1,21 @@
+# IoW configuration for this target. Mounted read-only into the agent and
+# hot-reloaded: edit and save, no restart needed. A bad file keeps the last
+# good config and shows the error in the dashboard.
+target:
+  container: iow-target
+  source_dir: /workspace/target
+  probes:
+    - url: http://iow-target:8000/
+    - url: http://iow-target:8000/health
+  probe_interval_s: 3
+  probe_timeout_s: 2
+  probe_failures_before_crash: 2   # consecutive failures while the container runs
+
+observer:
+  error_patterns: ["Traceback", "Error:", "Exception", "exited with code"]
+  crash_dedup_window_s: 30
+  suggestion_dedup_window_s: 300
+  restart_loop: { restarts: 3, window_s: 60 }
+  log_settle_s: 1.0               # wait this long after an error line for the traceback to finish
+  log_excerpt_lines: 60
+  reconnect_backoff_max_s: 10     # Docker daemon / container reconnect backoff ceiling
