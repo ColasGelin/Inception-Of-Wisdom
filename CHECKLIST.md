@@ -67,7 +67,7 @@ Each item says how it was verified. "live" = run for real with `docker compose`.
   the agent (live: `[config] iow.config.yml changed`, next heal `[verify] watching the target for 3s`;
   test `test_grace_period_is_read_from_config_at_verify_time`).
 - [x] Tests run on a temporary git repository with a fake Docker target and a fake LLM (`test_wisdom.py`,
-  `test_git_ops.py`); `make test` needs neither Ollama nor Docker access: 123 tests.
+  `test_git_ops.py`); `make test` needs neither Ollama nor Docker access: 127 tests.
 - [x] Stress (all live):
   - plant a bug during a heal -> HTTP 409 "a heal is in progress", nothing written;
   - kill the target mid-verify -> that attempt fails (`exit:137`, excerpt limited to the killed run),

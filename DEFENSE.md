@@ -17,7 +17,7 @@ Optionally shorten the wait: set `grace_period_s: 5` in `p3/target/iow.config.ym
 | 8 | `git -C p3/.runtime/target status; git -C p3/.runtime/target log --oneline --all -3` | Clean tree, `main` checked out, `iow/auto-heal` points at the original commit. |
 | 9 | `make heal-off`, `make bug BUG=syntax` | Header turns red; tab 3: "Refused triggers: kill switch is off". `make heal-on`. |
 | 9.5 | edit `grace_period_s: 3`, save | `[config] iow.config.yml changed`, tab 3 shows 3, next verify waits 3 s. |
-| 10 | `make test` | 126 tests, no Ollama needed. |
+| 10 | `make test` | 127 tests, no Ollama needed. |
 
 Bonus (`make up PART=bonus`): after a heal, tab 3 links to the pull request on the local Gitea
 (http://127.0.0.1:3042/iow/target/pulls), with the diff rendered by the dashboard and a timeline of heals.
