@@ -89,10 +89,25 @@ def test_restart_loop_without_errors_raises_a_crash(config_file):
     fake = FakeDocker()
     store = _store()
     w = DockerWatcher(cfg, store, client_factory=lambda t: fake)
-    for _ in range(3):
+    for _ in range(3):  # the restart policy brings it back: die, start, with nobody asking
+        w.handle_docker_event({"Action": "die", "Actor": {"Attributes": {"exitCode": "0"}}}, fake)
         w.handle_docker_event({"Action": "start"}, fake)
     crashes = [e for e in store.list() if e.kind == "crash"]
     assert len(crashes) == 1 and crashes[0].restart_loop
+
+
+def test_requested_restarts_are_not_a_restart_loop(config_file):
+    """`docker restart`, `make bug`, the loop's own restarts, `compose up`: kill/stop come first."""
+    cfg = config_file(FAST + "\n")
+    fake = FakeDocker()
+    store = _store()
+    w = DockerWatcher(cfg, store, client_factory=lambda t: fake)
+    w.handle_docker_event({"Action": "create"}, fake)
+    w.handle_docker_event({"Action": "start"}, fake)
+    for _ in range(4):
+        for action in ("kill", "die", "stop", "start", "restart"):
+            w.handle_docker_event({"Action": action, "Actor": {"Attributes": {"exitCode": "0"}}}, fake)
+    assert not [e for e in store.list() if e.kind == "crash"]
 
 
 def test_error_pattern_in_logs_raises_crash(config_file):

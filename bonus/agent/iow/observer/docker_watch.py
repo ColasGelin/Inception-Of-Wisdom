@@ -104,6 +104,10 @@ class DockerWatcher:
         self._last_crash_count: dict[str, int] = {}
         self._run_started: float | None = None  # time of the last `start` event seen
         self._run_id: str | None = None          # StartedAt of that run
+        # Restart-loop accounting: a start counts only if the run before it died on its own.
+        # A requested stop/restart (operator, `make bug`, the loop) sends kill/stop first.
+        self._died = False
+        self._stop_requested = False
         self._lock = threading.Lock()
 
     # ---- helpers -------------------------------------------------------
@@ -215,20 +219,14 @@ class DockerWatcher:
                 self._run_id = client.containers.get(self.name).attrs.get("State", {}).get("StartedAt")
             except Exception:
                 self._run_id = None
-            self._starts.append(now)
-            window = self.config.get().observer.restart_loop
-            while self._starts and now - self._starts[0] > window.window_s:
-                self._starts.popleft()
-            if len(self._starts) >= window.restarts:
-                status = f"restart loop: {len(self._starts)} starts in {window.window_s:g}s"
-                flagged = self.events.mark_restart_loop(now - window.window_s, status)
-                if flagged is None and not any(
-                        e.restart_loop for e in self.events.crashes_since(now - window.window_s)):
-                    self.events.record("crash", "docker", f"restart-loop:{self.name}",
-                                       message=status, status=status, restart_loop=True)
-                if flagged is not None:
-                    say("observer", f"{status} ({flagged.signature})")
+            unprompted = self._died and not self._stop_requested
+            self._died = self._stop_requested = False
+            if unprompted:
+                self._count_restart(now)
+        elif action in ("kill", "stop"):
+            self._stop_requested = True
         elif action == "die":
+            self._died = True
             code = int(attrs.get("exitCode", "0") or 0)
             if code != 0:
                 self._crash_from_exit(client, code, self._run_started, when)
@@ -237,6 +235,23 @@ class DockerWatcher:
                 self.refresh_state(client)
             except Exception:
                 pass
+
+    def _count_restart(self, now: float) -> None:
+        """A start the restart policy made after the container died on its own."""
+        self._starts.append(now)
+        window = self.config.get().observer.restart_loop
+        while self._starts and now - self._starts[0] > window.window_s:
+            self._starts.popleft()
+        if len(self._starts) < window.restarts:
+            return
+        status = f"restart loop: {len(self._starts)} starts in {window.window_s:g}s"
+        flagged = self.events.mark_restart_loop(now - window.window_s, status)
+        if flagged is None and not any(
+                e.restart_loop for e in self.events.crashes_since(now - window.window_s)):
+            self.events.record("crash", "docker", f"restart-loop:{self.name}",
+                               message=status, status=status, restart_loop=True)
+        if flagged is not None:
+            say("observer", f"{status} ({flagged.signature})")
 
     def _crash_from_exit(self, client: Any, code: int, started: float | None, died: float) -> None:
         """Crash event for the run that just died, from that run's own log lines.
