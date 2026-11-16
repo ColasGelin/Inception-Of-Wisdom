@@ -8,6 +8,10 @@ through Git as if it had never acted.
 **observe → think → act → verify**, entirely offline once the models are downloaded:
 no remote LLM, no hosted embeddings, no telemetry.
 
+> Built for the 42 School *Inception-of-Wisdom* subject. The project is split into four
+> self-contained, independently runnable parts (`p1` Observer → `p2` Analyst → `p3` Wisdom Loop →
+> `bonus`), each with its own tests: 370 unit tests in total, none of which need Ollama or Docker access.
+
 | | |
 |---|---|
 | Chat model | `qwen2.5-coder:1.5b`: **1,543,714,304 parameters (1.54B, under 3B)**, read from Ollama's `/api/show` and shown in the dashboard header. The agent refuses any configured model with 3B parameters or more. |
@@ -62,7 +66,7 @@ Each part can be graded on its own: `make up PART=p1` (Observer), `PART=p2` (+ A
 | `make bug BUG=none` | back to the pristine code |
 | `make heal-off` / `make heal-on` | global kill switch (also a toggle in the dashboard header) |
 | `make reset` | rebuild the target workspace from the pristine source (ChromaDB untouched) |
-| `make test` | 127 unit tests (p3) in the agent image, with a fake Docker and a fake LLM (no Ollama needed) |
+| `make test` | 128 unit tests (p3) in the agent image, with a fake Docker and a fake LLM (no Ollama needed) |
 | `make export-run` | write the latest healed run and the latest rolled-back run to `exports/*.jsonl` |
 | `make logs`, `make ps` | follow the logs, list the containers |
 | `make down` | stop and remove the containers, keep the volumes |
